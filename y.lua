@@ -90,7 +90,6 @@ do
         connectTouch(char.HumanoidRootPart)
     end)
 end
-
 -- ─── TAB "test1" (Auto‐Farm + Auto‐Quest Level 1–20) ─────────────────────────
 local Test1Tab = Window:CreateTab("test1", nil)
 Test1Tab:CreateSection("Auto‐Farm + Auto‐Quest (Lv 1–20)")
