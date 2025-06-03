@@ -91,11 +91,11 @@ do
     end)
 end
 
--- ─── TAB "test1" (Auto-Farm Level 1–20) ────────────────────────────────────
+-- ─── TAB "test1" (Auto‐Farm + Auto‐Quest Level 1–20) ─────────────────────────
 local Test1Tab = Window:CreateTab("test1", nil)
-Test1Tab:CreateSection("Auto-Farm Level 1–20")
+Test1Tab:CreateSection("Auto‐Farm + Auto‐Quest (Lv 1–20)")
 
--- Services yang dibutuhkan
+-- Services
 local Players        = game:GetService("Players")
 local RunService     = game:GetService("RunService")
 local TweenService   = game:GetService("TweenService")
@@ -106,13 +106,19 @@ local char     = player.Character or player.CharacterAdded:Wait()
 local hrp      = char:WaitForChild("HumanoidRootPart")
 local autoFarmEnabled = false
 
--- Folder musuh di workspace (umumnya bernama "Enemies" atau "EnemyModels")
-local EnemiesFolder = workspace:FindFirstChild("Enemies") or workspace:FindFirstChild("EnemyModels")
+-- 1) Konfigurasi Quest (Bandit Quest)
+local questNPCName   = "BanditQuestNPC"         -- ⬅️ Ganti jika di server Anda NPC quest memiliki nama lain
+local questMobName   = "Bandit"                 -- ⬅️ Ganti jika mobs quest memiliki nama lain (biasanya "Bandit [Lv. X]")
+local questType      = "Bandit"                 -- nama quest yang dikirim ke remote (sesuai string di server)
+local questNPCModel  = workspace:FindFirstChild(questNPCName)    -- lokasi Quest NPC
+local startQuestRemote  = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("StartQuest")   -- ⬅️ Sesuaikan jika path/namanya berbeda
+local finishQuestRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("FinishQuest")  -- ⬅️ Sesuaikan jika path/namanya berbeda
 
--- Remote untuk menyerang musuh (nama dan path bisa berbeda-beda versi)
-local CommF_ = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CommF_")
+-- 2) Konfigurasi Musuh (Folder dan Remote Attack)
+local EnemiesFolder = workspace:FindFirstChild("Enemies") or workspace:FindFirstChild("EnemyModels")  -- ⬅️ Sesuaikan jika folder berbeda
+local attackRemote  = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CommF_")                -- ⬅️ Remote untuk attack biasa (MeleeHit)
 
--- Fungsi Anti-AFK
+-- 3) Anti‐AFK
 player.Idled:Connect(function()
     local vu = game:GetService("VirtualUser")
     vu:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
@@ -120,7 +126,7 @@ player.Idled:Connect(function()
     vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
 end)
 
--- Utility: Ambil level pemain (asumsi ada leaderstats.Level)
+-- 4) Utility: Ambil level dan status quest pemain
 local function getPlayerLevel()
     if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Level") then
         return player.leaderstats.Level.Value
@@ -128,16 +134,79 @@ local function getPlayerLevel()
     return 0
 end
 
--- Cari musuh terdekat yang masih hidup (Humanoid > 0) dan level musuh ≤ 20
-local function getNearestEnemy()
+-- Periksa apakah pemain sedang punya quest aktif (rise BoolValue “InQuest” atau “Quest” di player)
+-- Ini hanya contoh; sesuaikan kalau di server Anda berbeda
+local function isQuestActive()
+    -- Misal: ada Folder “Quests” di Player yang menyimpan nama quest dan progress
+    if player:FindFirstChild("Quests") and player.Quests:FindFirstChild("CurrentQuest") then
+        local cq = player.Quests.CurrentQuest
+        if cq.Value ~= "" then
+            return true
+        end
+    end
+    return false
+end
+
+local function getQuestProgress()
+    -- Ambil progress dan goal (misal di player.Quests.Progress & player.Quests.Goal)
+    if player:FindFirstChild("Quests") then
+        local qFolder = player.Quests
+        if qFolder:FindFirstChild("Progress") and qFolder:FindFirstChild("Goal") then
+            return qFolder.Progress.Value, qFolder.Goal.Value
+        end
+    end
+    return 0, 0
+end
+
+-- 5) Menerima Quest (warp ke NPC + Invoke Remote)
+local function acceptQuest()
+    if not questNPCModel then return false end
+    -- Warp ke dekat Quest NPC (±3 stud dari HumanoidRootPart NPC)
+    local npcHRP = questNPCModel:FindFirstChild("HumanoidRootPart")
+    if npcHRP then
+        local dest = npcHRP.CFrame * CFrame.new(0, 0, 3)
+        TweenService:Create(hrp, TweenInfo.new(0.4), {CFrame = dest}):Play()
+        wait(0.45)
+        -- Panggil remote untuk StartQuest
+        pcall(function()
+            startQuestRemote:InvokeServer(questType)
+        end)
+        wait(0.5)  -- beri waktu server memproses
+        return true
+    end
+    return false
+end
+
+-- 6) Menyerahkan Quest (warp ke NPC + Invoke Remote Finish)
+local function finishQuest()
+    if not questNPCModel then return false end
+    local npcHRP = questNPCModel:FindFirstChild("HumanoidRootPart")
+    if npcHRP then
+        local dest = npcHRP.CFrame * CFrame.new(0, 0, 3)
+        TweenService:Create(hrp, TweenInfo.new(0.4), {CFrame = dest}):Play()
+        wait(0.45)
+        pcall(function()
+            finishQuestRemote:InvokeServer(questType)
+        end)
+        wait(0.5)
+        return true
+    end
+    return false
+end
+
+-- 7) Cari musuh quest (yang level ≤20 dan cocok nama “Bandit”)
+local function getNearestQuestMob()
     if not EnemiesFolder then return nil end
     local nearest = nil
     local minDist = math.huge
+
     for _, enemy in ipairs(EnemiesFolder:GetChildren()) do
-        if enemy:FindFirstChild("Humanoid") and enemy:FindFirstChild("HumanoidRootPart") then
+        if enemy:FindFirstChild("Humanoid") 
+           and enemy:FindFirstChild("HumanoidRootPart") 
+           and string.find(enemy.Name, questMobName) then
             local hum = enemy.Humanoid
             if hum.Health > 0 then
-                -- Cek level musuh dari nama (misal "Bandit [Lv. 3]")
+                -- Cek level musuh dari nama (mis: “Bandit [Lv. 3]”)
                 local lvl = 0
                 local num = string.match(enemy.Name, "%[(?:Lv%.?%s?)(%d+)%]")
                 if num then lvl = tonumber(num) end
@@ -152,122 +221,146 @@ local function getNearestEnemy()
             end
         end
     end
+
     return nearest
 end
 
--- Fungsi warp dengan Tween (smooth)
+-- 8) Fungsi warp (reuse dari sebelumnya)
 local function warpToCFrame(destCFrame)
     TweenService:Create(hrp, TweenInfo.new(0.3), {CFrame = destCFrame}):Play()
     wait(0.35)
 end
 
--- Fungsi untuk memperbesar hitbox (HumanoidRootPart) dan menyerang musuh hingga mati
-local function farmEnemy(enemyModel)
+-- 9) Fungsi menyerang satu mob quest hingga mati (dengan memperbesar hitbox & jarak aman)
+local function farmQuestMob(enemyModel)
     if not enemyModel or not enemyModel:FindFirstChild("HumanoidRootPart") then return end
     local targetHRP = enemyModel.HumanoidRootPart
 
-    -- Simpan ukuran asli hitbox supaya nanti bisa dikembalikan
-    local originalSize
+    -- Simpan ukuran asli dan coba perbesar hitbox
+    local originalSize = nil
     local hitboxScaled = false
-    if targetHRP and targetHRP:IsA("BasePart") then
+    if targetHRP:IsA("BasePart") then
         originalSize = targetHRP.Size
-        -- Coba perbesar ukuran HRP (hitbox) sebanyak 5x lipat
         pcall(function()
             targetHRP.Size = originalSize * 5
             hitboxScaled = true
         end)
     end
 
-    -- Warp ke posisi sekitar 10 stud di belakang target (agar di luar jangkauan serangan musuh)
-    if targetHRP then
-        local behindCFrame = targetHRP.CFrame * CFrame.new(0, 0, 10)
-        warpToCFrame(behindCFrame)
-    end
+    -- Warp ke posisi 10 stud di belakang target (agar aman)
+    local behindCFrame = targetHRP.CFrame * CFrame.new(0, 0, 10)
+    warpToCFrame(behindCFrame)
 
-    -- Loop menyerang sampai HP musuh habis atau autoFarm dimatikan
+    -- Loop serang sampai mati atau autoFarm dimatikan
     while enemyModel 
           and enemyModel:FindFirstChild("Humanoid") 
           and enemyModel.Humanoid.Health > 0 
-          and autoFarmEnabled do
+          and autoFarmEnabled 
+          and isQuestActive() do
 
-        -- Jika masih ada HRP, panggil remote serang dari jauh
         if targetHRP then
-            -- Mengirim permintaan serang: "MeleeHit" + model + CFrame + part
             pcall(function()
-                CommF_:InvokeServer("MeleeHit", enemyModel, targetHRP.CFrame, targetHRP)
+                attackRemote:InvokeServer("MeleeHit", enemyModel, targetHRP.CFrame, targetHRP)
             end)
         end
         wait(0.15)
     end
 
-    -- Setelah musuh mati (atau loop berhenti), kembalikan ukuran hitbox semula
-    if hitboxScaled and targetHRP and originalSize then
+    -- Kembalikan ukuran hitbox semula
+    if hitboxScaled and originalSize and targetHRP then
         pcall(function()
             targetHRP.Size = originalSize
         end)
     end
 
-    -- Tunggu sedikit agar server memproses XP/loot
-    wait(0.5)
+    wait(0.5)  -- beri waktu server memproses kenaikan progress & XP
 end
 
--- Loop utama Auto-Farm (dijalankan di ‘spawn’ agar tidak blocking UI)
+-- 10) Loop utama Auto‐Farm + Auto‐Quest
 spawn(function()
     while true do
         wait(0.5)
+
         if autoFarmEnabled then
             local lvl = getPlayerLevel()
-            -- Jika level sudah ≥ 20, berhenti
+
+            -- 10.a) Jika level sudah ≥20 → matikan Auto‐Farm
             if lvl >= 20 then
                 autoFarmEnabled = false
                 Test1Tab.Flags.AutoFarmToggle = false
                 Test1Tab:CreateNotification({
-                    Title   = "Auto-Farm",
-                    Content = "Level sudah mencapai 20, Auto-Farm dihentikan.",
+                    Title   = "Auto‐Farm",
+                    Content = "Level Anda telah mencapai 20. Proses Auto‐Farm dihentikan.",
                     Duration= 4
                 })
                 break
             end
 
-            -- Cari musuh terdekat
-            local target = getNearestEnemy()
-            if target then
-                farmEnemy(target)
-            else
-                -- Jika tak ada musuh, warp ke spawn agar muncul musuh baru
-                local spawnCFrame = workspace:FindFirstChild("SpawnPoint") and workspace.SpawnPoint.CFrame
-                if spawnCFrame then
-                    warpToCFrame(spawnCFrame * CFrame.new(0, 5, 0))
+            -- 10.b) Jika belum ada quest aktif → ambil quest
+            if not isQuestActive() then
+                -- Coba accept quest, jika gagal (NPC tidak ada), tunggu dan ulang
+                local success = acceptQuest()
+                if not success then
+                    -- Misal jika NPC belum spawn / nama beda, tunggu 2 detik lalu ulang
+                    wait(2)
+                    continue
+                else
+                    -- Sukses menerima quest → tunggu 1 detik agar stat quest terbaca di player
+                    wait(1)
                 end
-                wait(2)
+            end
+
+            -- 10.c) Jika ada quest aktif → cek progress
+            local progress, goal = getQuestProgress()
+            -- Jika progress sudah ≥ goal → selesaikan quest
+            if progress >= goal then
+                finishQuest()
+                -- Setelah selesai quest, tunggu 1 detik sebelum ambil quest ulang
+                wait(1)
+                continue
+            end
+
+            -- 10.d) Jika quest aktif & belum terpenuhi → cari & farm mob quest
+            if isQuestActive() then
+                local target = getNearestQuestMob()
+                if target then
+                    farmQuestMob(target)
+                else
+                    -- Jika mob belum muncul / belum ada di area → warp ke spawn area mob
+                    -- Contoh: Bandit spawn area di “Bandit Island”. Sesuaikan CFrame ini jika perlu
+                    local banditSpawnPoint = workspace:FindFirstChild("BanditIslandSpawn")  -- ⬅️ Ganti jika ada folder CFrame spawn mob
+                    if banditSpawnPoint and banditSpawnPoint:IsA("BasePart") then
+                        warpToCFrame(banditSpawnPoint.CFrame * CFrame.new(0, 5, 0))
+                    end
+                    wait(2)
+                end
             end
         end
     end
 end)
 
--- Toggle di Rayfield untuk Enable/Disable Auto-Farm
+-- 11) Toggle di Rayfield untuk Enable/Disable Auto‐Farm + Auto‐Quest
 Test1Tab:CreateToggle({
-    Name     = "Enable Auto-Farm (Lv 1–20)",
+    Name     = "Enable Auto‐Farm+Quest (Lv 1–20)",
     Flag     = "AutoFarmToggle",
     Value    = false,
     Callback = function(value)
         autoFarmEnabled = value
         if autoFarmEnabled then
             Test1Tab:CreateNotification({
-                Title   = "Auto-Farm Dimulai",
-                Content = "Memperbesar hitbox musuh dan menyerang dari jarak aman.",
+                Title   = "Auto‐Farm+Quest Dimulai",
+                Content = "Mengambil dan menyelesaikan quest Bandit, membunuh musuh Lv ≤ 20 hingga level 20.",
                 Duration= 3
             })
         else
             Test1Tab:CreateNotification({
-                Title   = "Auto-Farm Dihentikan",
-                Content = "Script berhenti membunuh musuh.",
+                Title   = "Auto‐Farm+Quest Dihentikan",
+                Content = "Script berhenti menjalankan quest/membunuh musuh.",
                 Duration= 3
             })
         end
     end
 })
-
 
 -- ─── TAB "test2" ───────────────────────────────────────────────────────────
 local Test2Tab = Window:CreateTab("test2", nil)
